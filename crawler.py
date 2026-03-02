@@ -1,8 +1,9 @@
 import time
 import json
 import logging
-from typing import List, Dict, Iterable, Optional
+from typing import List, Dict, Iterable, Optional, Tuple
 from urllib.parse import urlparse
+from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
@@ -56,6 +57,39 @@ class DuckDuckGoJobBoardCrawler:
         "browse jobs",
     ]
 
+    # known job aggregators
+    JOB_AGGREGATORS = {
+        "indeed.com",
+        "linkedin.com",
+        "glassdoor.com",
+        "ziprecruiter.com",
+        "monster.com",
+        "careerbuilder.com",
+        "snagajob.com",
+        "joblist.com",
+        "betterteam.com",
+        "simplyhired.com",
+        "crunchboard.com",
+        "dice.com",
+        "builtin.com",
+        "techcrunch.com",
+        "stackoverflow.com",
+    }
+
+    # common career page paths to try
+    CAREER_PAGE_PATHS = [
+        "/careers",
+        "/jobs",
+        "/work-with-us",
+        "/careers/jobs",
+        "/join-us",
+        "/opportunities",
+        "/recruitment",
+        "/career",
+        "/hiring",
+        "/employment",
+    ]
+
     def __init__(
         self,
         rate_limit: float = 1.0,
@@ -73,6 +107,108 @@ class DuckDuckGoJobBoardCrawler:
         self.engine = engine.lower()
         if self.engine not in self.ENGINES:
             raise ValueError(f"unsupported engine: {engine}")
+
+    # --- checkpoint/resume ---------------------------------------------------
+    @staticmethod
+    def load_checkpoint(checkpoint_file: str = ".crawler_checkpoint.json") -> Dict:
+        """Load the last checkpoint for resuming crawl."""
+        try:
+            p = Path(checkpoint_file)
+            if p.exists():
+                with open(p, "r") as f:
+                    return json.load(f)
+        except Exception as e:
+            logger.warning(f"could not load checkpoint: {e}")
+        return {"last_query_index": -1, "discovered_count": 0}
+
+    @staticmethod
+    def save_checkpoint(data: Dict, checkpoint_file: str = ".crawler_checkpoint.json") -> None:
+        """Save checkpoint for resuming later."""
+        try:
+            with open(checkpoint_file, "w") as f:
+                json.dump(data, f)
+        except Exception as e:
+            logger.warning(f"could not save checkpoint: {e}")
+
+    # --- categorization -------------------------------------------------
+    @staticmethod
+    def is_job_aggregator(url: str) -> bool:
+        """Check if URL is a known job aggregator."""
+        domain = urlparse(url).netloc.lower()
+        domain = domain.replace("www.", "")
+        return domain in DuckDuckGoJobBoardCrawler.JOB_AGGREGATORS
+
+    def find_career_page(self, domain: str) -> Optional[str]:
+        """Try to find career page for a company domain."""
+        for path in self.CAREER_PAGE_PATHS:
+            career_url = f"https://{domain}{path}"
+            try:
+                r = self.session.head(career_url, timeout=5, allow_redirects=True)
+                if r.status_code < 400:
+                    # check if it's actually a careers page
+                    if self._looks_like_career_page(career_url):
+                        return career_url
+            except requests.RequestException:
+                pass
+        return None
+
+    def _looks_like_career_page(self, url: str) -> bool:
+        """Check if a URL looks like a career/jobs page."""
+        try:
+            r = self.session.get(url, timeout=5)
+            r.raise_for_status()
+            text = r.text.lower()
+            for kw in self.PAGE_KEYWORDS + ["career", "position", "opening"]:
+                if kw in text:
+                    return True
+        except requests.RequestException:
+            pass
+        return False
+
+    # --- spreadsheet output --------------------------------------------------
+    def save_company_careers_to_excel(self, companies: List[Dict], path: str) -> None:
+        """Save company career pages to Excel.
+        
+        Expected format: [{"domain": "...", "career_page": "...", "title": "..."}]
+        """
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Company Careers"
+        ws.append(["Domain", "Career Page URL", "Title", "Source"])
+        for item in companies:
+            ws.append([
+                item.get("domain", ""),
+                item.get("career_page", ""),
+                item.get("title", ""),
+                item.get("source", "direct"),
+            ])
+        ws.column_dimensions['A'].width = 30
+        ws.column_dimensions['B'].width = 60
+        ws.column_dimensions['C'].width = 50
+        ws.column_dimensions['D'].width = 20
+        wb.save(path)
+
+    def save_aggregators_to_excel(self, aggregators: List[Dict], path: str) -> None:
+        """Save job aggregators to Excel.
+        
+        Expected format: [{"domain": "...", "url": "...", "title": "..."}]
+        """
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Job Aggregators"
+        ws.append(["Domain", "URL", "Title"])
+        for item in aggregators:
+            ws.append([
+                item.get("domain", ""),
+                item.get("url", ""),
+                item.get("title", ""),
+            ])
+        ws.column_dimensions['A'].width = 30
+        ws.column_dimensions['B'].width = 60
+        ws.column_dimensions['C'].width = 50
+        wb.save(path)
 
     @staticmethod
     def default_queries() -> List[str]:
