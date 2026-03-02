@@ -347,6 +347,243 @@ class DuckDuckGoJobBoardCrawler:
 
         return False
 
+    # --- career link discovery & verification ------------------------------
+    def find_career_links(self, site_url: str) -> List[str]:
+        """Find candidate career/job links on a company site homepage.
+
+        Returns resolved absolute URLs to candidate career pages.
+        """
+        try:
+            r = self.session.get(site_url, timeout=self.timeout)
+            r.raise_for_status()
+            html = r.text
+        except requests.RequestException:
+            return []
+
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        candidates = []
+        keywords = ["careers", "jobs", "openings", "positions", "join-us", "work-with-us", "vacancies", "apply"]
+        for a in soup.find_all(["a", "button"], href=True):
+            text = (a.get_text(" ", strip=True) or "").lower()
+            href = a.get("href")
+            if not href:
+                continue
+            if any(k in text for k in keywords) or any(k in href.lower() for k in keywords):
+                # resolve relative URL
+                from urllib.parse import urljoin
+                resolved = urljoin(site_url, href)
+                if resolved not in candidates:
+                    candidates.append(resolved)
+
+        # also look for buttons without href but with onclicks containing URLs
+        for btn in soup.find_all("button"):
+            onclick = btn.get("onclick") or ""
+            if onclick and any(k in btn.get_text(" ", strip=True).lower() for k in keywords):
+                import re
+                m = re.search(r"(https?://[^\"]+)", onclick)
+                if m:
+                    url = m.group(1)
+                    if url not in candidates:
+                        candidates.append(url)
+
+        return candidates
+
+    def verify_jobs_on_page(self, page_url: str) -> bool:
+        """Verify that a page contains actual job postings.
+
+        Heuristics:
+        - JSON-LD JobPosting present
+        - multiple anchors with job-related hrefs/text
+        - presence of strings like 'apply now', 'job description', 'posted'
+        """
+        try:
+            r = self.session.get(page_url, timeout=self.timeout)
+            r.raise_for_status()
+            text = r.text
+        except requests.RequestException:
+            return False
+
+        lower = text.lower()
+        if "jobposting" in lower or "job posting" in lower:
+            return True
+
+        # JSON-LD check
+        try:
+            from bs4 import BeautifulSoup
+            import json
+            soup = BeautifulSoup(text, "html.parser")
+            for script in soup.find_all("script", type="application/ld+json"):
+                try:
+                    payload = json.loads(script.string or "{}")
+                    if isinstance(payload, list):
+                        items = payload
+                    else:
+                        items = [payload]
+                    for it in items:
+                        t = it.get("@type") if isinstance(it, dict) else None
+                        if t and "job" in t.lower():
+                            return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # look for several job-like anchors or keywords
+        job_like = 0
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(text, "html.parser")
+            for a in soup.find_all("a", href=True):
+                href = a["href"].lower()
+                txt = (a.get_text(" ", strip=True) or "").lower()
+                if any(p in href for p in ["/jobs", "/careers", "/positions", "/openings", "job/"]):
+                    job_like += 1
+                if any(k in txt for k in ["apply", "apply now", "job", "position", "opening", "vacancy"]):
+                    job_like += 1
+                if job_like >= 3:
+                    return True
+        except Exception:
+            pass
+
+        # keyword sniff
+        for phrase in ["apply now", "job description", "posted", "salary"]:
+            if phrase in lower:
+                return True
+
+        return False
+
+    # --- chamber of commerce directory scraping ---------------------------
+    def find_member_directory(self, site_url: str) -> Optional[str]:
+        """Find a member directory URL on a Chamber of Commerce site (if present)."""
+        try:
+            r = self.session.get(site_url, timeout=self.timeout)
+            r.raise_for_status()
+            html = r.text
+        except requests.RequestException:
+            return None
+
+        from bs4 import BeautifulSoup
+        from urllib.parse import urljoin
+        soup = BeautifulSoup(html, "html.parser")
+        keywords = ["member", "directory", "members", "member directory", "business directory"]
+        for a in soup.find_all("a", href=True):
+            txt = (a.get_text(" ", strip=True) or "").lower()
+            href = a.get("href")
+            if any(k in txt for k in keywords) or any(k in href.lower() for k in keywords):
+                return urljoin(site_url, href)
+        return None
+
+    def scrape_member_directory(self, directory_url: str, max_pages: int = 50) -> List[Dict]:
+        """Scrape a member directory and return list of {'name','url'}.
+
+        Attempts to page through simple alphabetical or pagination schemes.
+        """
+        members: List[Dict] = []
+        try:
+            r = self.session.get(directory_url, timeout=self.timeout)
+            r.raise_for_status()
+            html = r.text
+        except requests.RequestException:
+            return members
+
+        from bs4 import BeautifulSoup
+        from urllib.parse import urljoin
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Simple member row extraction heuristics
+        # Look for lists / tables of companies
+        def extract_from_soup(soup_page):
+            found = []
+            # common patterns: li items, table rows, divs with class member
+            for li in soup_page.find_all("li"):
+                a = li.find("a", href=True)
+                if a:
+                    name = a.get_text(strip=True)
+                    href = urljoin(directory_url, a["href"])
+                    if name and href:
+                        found.append({"name": name, "url": href})
+            for tr in soup_page.find_all("tr"):
+                a = tr.find("a", href=True)
+                if a:
+                    name = a.get_text(strip=True)
+                    href = urljoin(directory_url, a["href"])
+                    if name and href:
+                        found.append({"name": name, "url": href})
+            # fallback: anchors under divs
+            for div in soup_page.find_all("div"):
+                a = div.find("a", href=True)
+                if a and len(a.get_text(strip=True)) > 2:
+                    name = a.get_text(strip=True)
+                    href = urljoin(directory_url, a["href"])
+                    found.append({"name": name, "url": href})
+            return found
+
+        members.extend(extract_from_soup(soup))
+
+        # Try to follow A-Z links if present
+        az_links = []
+        for a in soup.find_all("a", href=True):
+            txt = (a.get_text(" ", strip=True) or "").strip()
+            if len(txt) == 1 and txt.isalpha():
+                az_links.append(urljoin(directory_url, a["href"]))
+
+        visited = set()
+        pages = 0
+        for link in az_links:
+            if pages >= max_pages:
+                break
+            if link in visited:
+                continue
+            visited.add(link)
+            try:
+                r = self.session.get(link, timeout=self.timeout)
+                r.raise_for_status()
+                soup2 = BeautifulSoup(r.text, "html.parser")
+                members.extend(extract_from_soup(soup2))
+            except requests.RequestException:
+                continue
+            pages += 1
+
+        # Try basic pagination (next links)
+        next_link = None
+        try:
+            next_a = soup.find("a", string=lambda s: s and "next" in s.lower())
+            if next_a and next_a.get("href"):
+                next_link = urljoin(directory_url, next_a.get("href"))
+        except Exception:
+            next_link = None
+
+        pages = 0
+        while next_link and pages < max_pages:
+            if next_link in visited:
+                break
+            visited.add(next_link)
+            try:
+                r = self.session.get(next_link, timeout=self.timeout)
+                r.raise_for_status()
+                soup3 = BeautifulSoup(r.text, "html.parser")
+                members.extend(extract_from_soup(soup3))
+                na = soup3.find("a", string=lambda s: s and "next" in s.lower())
+                next_link = urljoin(directory_url, na.get("href")) if na and na.get("href") else None
+            except Exception:
+                break
+            pages += 1
+
+        # dedupe by url
+        seen = set()
+        out: List[Dict] = []
+        for m in members:
+            u = m.get("url")
+            if not u:
+                continue
+            if u in seen:
+                continue
+            seen.add(u)
+            out.append(m)
+
+        return out
+
     def confirm_company_site(self, url: str, deep: bool = False) -> bool:
         """Heuristic check whether a URL/domain is an actual company website.
 

@@ -16,13 +16,13 @@ pip install -r requirements.txt
 
 ```bash
 # One-command comprehensive crawl (recommended)
-./start_comprehensive.sh
+./scripts/start_comprehensive.sh
 
 # Discover 25 NEW job boards, then stop
-python3 run.py --engine brave --filter --discover 25 --output output/discovery
+./scripts/run_crawler.sh quick --discover 25
 
 # Backward-compatible alias for --discover
-python3 run.py --engine brave --filter --limit 25 --output output/discovery
+./scripts/run_crawler.sh quick --limit 25
 ```
 
 On Windows, use `start_comprehensive.bat` (CMD) or `./start_comprehensive.ps1` (PowerShell).

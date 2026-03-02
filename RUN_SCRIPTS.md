@@ -6,9 +6,9 @@ Three easy-to-use scripts for running the Job Board Crawler on different operati
 
 | OS | Script | Command |
 |---|---|---|
-| 🐧 Linux/macOS | `run_crawler.sh` | `./run_crawler.sh [mode]` |
-| 🪟 Windows (CMD) | `run_crawler.bat` | `run_crawler.bat [mode]` |
-| 🪟 Windows (PowerShell) | `run_crawler.ps1` | `.\run_crawler.ps1 [mode]` |
+| 🐧 Linux/macOS | `scripts/run_crawler.sh` | `./scripts/run_crawler.sh [mode]` |
+| 🪟 Windows (CMD) | `scripts/run_crawler.bat` | `scripts\run_crawler.bat [mode]` |
+| 🪟 Windows (PowerShell) | `scripts/run_crawler.ps1` | `.\scripts\run_crawler.ps1 [mode]` |
 
 ## One-Command Comprehensive Startup
 
@@ -16,9 +16,9 @@ Use these scripts to run a comprehensive crawl in one command (extensive mode + 
 
 | OS | Script | One command |
 |---|---|---|
-| 🐧 Linux/macOS | `start_comprehensive.sh` | `./start_comprehensive.sh` |
-| 🪟 Windows (CMD) | `start_comprehensive.bat` | `start_comprehensive.bat` |
-| 🪟 Windows (PowerShell) | `start_comprehensive.ps1` | `.\start_comprehensive.ps1` |
+| 🐧 Linux/macOS | `scripts/start_comprehensive.sh` | `./scripts/start_comprehensive.sh` |
+| 🪟 Windows (CMD) | `scripts/start_comprehensive.bat` | `scripts\start_comprehensive.bat` |
+| 🪟 Windows (PowerShell) | `scripts/start_comprehensive.ps1` | `.\scripts\start_comprehensive.ps1` |
 
 ## Modes
 
@@ -35,7 +35,7 @@ All scripts support these modes:
 ### Linux/macOS
 ```bash
 # One-command comprehensive crawl
-./start_comprehensive.sh
+./scripts/start_comprehensive.sh
 
 # Quick discovery (10 boards)
 ./run_crawler.sh quick
@@ -59,7 +59,7 @@ All scripts support these modes:
 ### Windows (Command Prompt/CMD)
 ```cmd
 REM One-command comprehensive crawl
-start_comprehensive.bat
+scripts\start_comprehensive.bat
 
 REM Quick discovery
 run_crawler.bat quick
@@ -80,7 +80,7 @@ run_crawler.bat test
 ### Windows (PowerShell)
 ```powershell
 # One-command comprehensive crawl
-.\start_comprehensive.ps1
+.\scripts\start_comprehensive.ps1
 
 # Quick discovery
 .\run_crawler.ps1 quick

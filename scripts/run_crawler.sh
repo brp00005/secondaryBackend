@@ -1,12 +1,13 @@
 #!/bin/bash
-# Job Board Crawler - Linux/macOS execution script
-# Usage: ./run_crawler.sh [mode] [options]
+# Job Board Crawler - Linux/macOS execution script (moved to scripts/)
+# Usage: ./scripts/run_crawler.sh [mode] [options]
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV_PATH="$SCRIPT_DIR/.venv"
-OUTPUT_DIR="$SCRIPT_DIR/output"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+VENV_PATH="$REPO_ROOT/.venv"
+OUTPUT_DIR="$REPO_ROOT/output"
 
 # Colors for output
 RED='\033[0;31m'
@@ -24,7 +25,7 @@ print_banner() {
 
 # Print usage
 print_usage() {
-    echo -e "${YELLOW}Usage: ./run_crawler.sh [MODE] [OPTIONS]${NC}"
+    echo -e "${YELLOW}Usage: ./scripts/run_crawler.sh [MODE] [OPTIONS]${NC}"
     echo ""
     echo "MODES:"
     echo "  quick       - Discover 10 job boards (default)"
@@ -39,10 +40,10 @@ print_usage() {
     echo "  --limit N   - Override limit (e.g., --limit 25)"
     echo ""
     echo "EXAMPLES:"
-    echo "  ./run_crawler.sh quick"
-    echo "  ./run_crawler.sh standard --engine brave"
-    echo "  ./run_crawler.sh extensive --limit 75"
-    echo "  ./run_crawler.sh resume"
+    echo "  ./scripts/run_crawler.sh quick"
+    echo "  ./scripts/run_crawler.sh standard --engine brave"
+    echo "  ./scripts/run_crawler.sh extensive --limit 75"
+    echo "  ./scripts/run_crawler.sh resume"
 }
 
 # Check virtual environment
@@ -57,6 +58,7 @@ check_venv() {
 # Activate virtual environment
 activate_venv() {
     if [ -f "$VENV_PATH/bin/activate" ]; then
+        # shellcheck source=/dev/null
         source "$VENV_PATH/bin/activate"
         echo -e "${GREEN}✓ Virtual environment activated${NC}"
     else
@@ -97,7 +99,7 @@ run_crawler() {
             ;;
         resume)
             echo -e "${BLUE}🔄 Resuming from last checkpoint...${NC}"
-            python3 run.py --engine brave --filter --resume $extra_args
+            python3 "$REPO_ROOT/run.py" --engine brave --filter --resume $extra_args
             return $?
             ;;
         test)
@@ -147,7 +149,7 @@ TESTEOF
     esac
     
     echo -e "${BLUE}🕷️  Crawling job boards (limit: $limit)...${NC}"
-    python3 run.py --engine brave --filter --limit $limit $detect_careers --output "output/$output_name" $extra_args
+    python3 "$REPO_ROOT/run.py" --engine brave --filter --limit $limit $detect_careers --output "$REPO_ROOT/output/$output_name" $extra_args
 }
 
 # Main execution

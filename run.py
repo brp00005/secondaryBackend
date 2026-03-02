@@ -57,6 +57,21 @@ def parse_args():
         default=".crawler_checkpoint.json",
         help="Checkpoint file path",
     )
+    p.add_argument(
+        "--chambers",
+        action="store_true",
+        help="Run Chamber-of-Commerce directory discovery (state -> chamber -> members)",
+    )
+    p.add_argument(
+        "--states",
+        nargs="+",
+        help="List of states to search (e.g. 'California Texas'). If omitted, uses all US states",
+    )
+    p.add_argument(
+        "--chamber-output",
+        default="chambers.xlsx",
+        help="Output workbook for chamber/member scraping",
+    )
     return p.parse_args()
 
 
@@ -113,6 +128,127 @@ def main():
             print(f"[Resume] Previous discovered count found ({previous_count}) but no key history; counting new discoveries from this run.")
     newly_discovered_urls: List[str] = []
     
+    # Chambers workflow
+    if args.chambers:
+        print("Running Chamber-of-Commerce directory discovery...")
+        states = args.states or [
+            "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado",
+            "Connecticut", "Delaware", "Florida", "Georgia", "Hawaii", "Idaho",
+            "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky", "Louisiana",
+            "Maine", "Maryland", "Massachusetts", "Michigan", "Minnesota", "Mississippi",
+            "Missouri", "Montana", "Nebraska", "Nevada", "New Hampshire", "New Jersey",
+            "New Mexico", "New York", "North Carolina", "North Dakota", "Ohio", "Oklahoma",
+            "Oregon", "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota",
+            "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington",
+            "West Virginia", "Wisconsin", "Wyoming",
+        ]
+
+        chamber_progress = checkpoint.get("chamber_progress", {})
+        members_rows = []
+        verified_rows = []
+
+        for state in states:
+            print(f"State: {state}")
+            query = f"{state} chamber of commerce member directory"
+            try:
+                results = crawler.search(query, pages=1)
+            except Exception as e:
+                print(f"  Search error for {state}: {e}")
+                continue
+
+            chamber_sites = []
+            for r in results:
+                u = r.get("url")
+                if not u:
+                    continue
+                d = crawler.get_domain(u)
+                if not d:
+                    continue
+                if "chamber" in d or "chamber" in u.lower():
+                    chamber_sites.append(u)
+
+            chamber_sites = crawler.dedupe(chamber_sites)[:10]
+
+            for site in chamber_sites:
+                if chamber_progress.get(site):
+                    print(f"  Skipping already-processed chamber: {site}")
+                    continue
+                print(f"  Inspecting chamber site: {site}")
+                directory = crawler.find_member_directory(site)
+                if not directory:
+                    print("    No member directory found")
+                    chamber_progress[site] = True
+                    checkpoint["chamber_progress"] = chamber_progress
+                    DuckDuckGoJobBoardCrawler.save_checkpoint(checkpoint, args.checkpoint)
+                    continue
+
+                print(f"    Found directory: {directory} — scraping members...")
+                members = crawler.scrape_member_directory(directory, max_pages=50)
+                print(f"    Extracted {len(members)} members")
+
+                for m in members:
+                    name = m.get("name")
+                    url = m.get("url")
+                    members_rows.append((state, site, name, url))
+
+                    # quick company site check
+                    if not crawler.confirm_company_site(url, deep=bool(args.verify)):
+                        continue
+
+                    # try to find career links and (optionally) verify
+                    career_candidates = crawler.find_career_links(url)
+                    found_career = None
+                    if career_candidates:
+                        if bool(args.verify):
+                            for cand in career_candidates:
+                                if crawler.verify_jobs_on_page(cand):
+                                    found_career = cand
+                                    break
+                        else:
+                            # quick mode: record the first candidate without deep fetch
+                            found_career = career_candidates[0]
+
+                    if found_career:
+                        domain = crawler.get_domain(url)
+                        verified_rows.append((state, site, name, url, domain, found_career))
+                        # register discovery key to avoid duplicates later
+                        seen_keys.add(domain or url)
+
+                # mark chamber processed and save checkpoint
+                chamber_progress[site] = True
+                checkpoint["chamber_progress"] = chamber_progress
+                checkpoint["discovered_keys"] = list(seen_keys)
+                checkpoint["discovered_count"] = len(seen_keys)
+                DuckDuckGoJobBoardCrawler.save_checkpoint(checkpoint, args.checkpoint)
+
+        # save to workbook
+        try:
+            from openpyxl import Workbook
+            wb = Workbook()
+            ws1 = wb.active
+            ws1.title = "Members"
+            ws1.append(["State", "Chamber Site", "Member Name", "Member URL"])
+            for r in members_rows:
+                ws1.append(list(r))
+
+            ws2 = wb.create_sheet("Verified Careers")
+            ws2.append(["State", "Chamber Site", "Company Name", "Company URL", "Domain", "Career Page"])
+            for r in verified_rows:
+                ws2.append(list(r))
+
+            wb.save(args.chamber_output)
+            print(f"Saved chamber scraping results to {args.chamber_output}")
+        except Exception as e:
+            print(f"Error saving chamber workbook: {e}")
+
+        # update checkpoint
+        checkpoint["last_query_index"] = checkpoint.get("last_query_index", -1)
+        checkpoint["discovered_keys"] = list(seen_keys)
+        checkpoint["discovered_count"] = len(seen_keys)
+        DuckDuckGoJobBoardCrawler.save_checkpoint(checkpoint, args.checkpoint)
+
+        print("Chamber-of-Commerce run complete.")
+        return
     # run queries
     for idx, q in enumerate(queries[start_index:], start=start_index):
         if discover_target and len(newly_discovered_urls) >= discover_target:

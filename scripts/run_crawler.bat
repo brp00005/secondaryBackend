@@ -1,12 +1,16 @@
 @echo off
-REM Job Board Crawler - Windows batch execution script
-REM Usage: run_crawler.bat [mode] [options]
+REM Job Board Crawler - Windows batch execution script (moved to scripts) 
+REM Usage: scripts\run_crawler.bat [mode] [options]
 
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
+REM go to repo root and remember it
+cd ..
+set REPO_ROOT=%cd%
+cd "%~dp0"
 
-set VENV_PATH=%cd%\.venv
-set OUTPUT_DIR=%cd%\output
+set VENV_PATH=%REPO_ROOT%\.venv
+set OUTPUT_DIR=%REPO_ROOT%\output
 set PYTHON_EXE=%VENV_PATH%\Scripts\python.exe
 set MODE=%1
 if "%MODE%"=="" set MODE=quick
@@ -64,13 +68,13 @@ if /i "%MODE%"=="extensive" (
 
 if /i "%MODE%"=="resume" (
     echo [*] Resuming from last checkpoint...
-    %PYTHON_EXE% run.py --engine brave --filter --resume
+    %PYTHON_EXE% %REPO_ROOT%\run.py --engine brave --filter --resume %EXTRA_ARGS%
     goto :success
 )
 
 if /i "%MODE%"=="test" (
     echo [*] Running unit tests...
-    %PYTHON_EXE% << ENDPYTHON
+    %PYTHON_EXE% - << ENDPYTHON
 from crawler import DuckDuckGoJobBoardCrawler
 print("\n" + "="*60)
 print("UNIT TESTS")
@@ -92,7 +96,7 @@ exit /b 1
 
 :run_crawler
 echo [*] Crawling job boards (limit: %LIMIT%)...
-%PYTHON_EXE% run.py --engine brave --filter --limit %LIMIT% %DETECT_CAREERS% --output output/%OUTPUT_NAME%
+%PYTHON_EXE% %REPO_ROOT%\run.py --engine brave --filter --limit %LIMIT% %DETECT_CAREERS% --output %OUTPUT_DIR%\%OUTPUT_NAME% %EXTRA_ARGS%
 if errorlevel 1 goto :error
 
 :success
@@ -111,7 +115,7 @@ exit /b 1
 
 :print_usage
 echo.
-echo Usage: run_crawler.bat [MODE] [OPTIONS]
+echo Usage: scripts\run_crawler.bat [MODE] [OPTIONS]
 echo.
 echo MODES:
 echo   quick       - Discover 10 job boards (default)
@@ -125,9 +129,10 @@ echo   --help      - Show this message
 echo   --limit N   - Override limit (e.g., --limit 25)
 echo.
 echo EXAMPLES:
-echo   run_crawler.bat quick
-echo   run_crawler.bat standard
-echo   run_crawler.bat extensive
-echo   run_crawler.bat resume
+echo   scripts\run_crawler.bat quick
+echo   scripts\run_crawler.bat standard
+echo   scripts\run_crawler.bat extensive
+echo   scripts\run_crawler.bat resume
 echo.
 goto :eof
+
