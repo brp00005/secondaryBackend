@@ -1,6 +1,6 @@
 # DuckDuckGo Job Board Crawler
 
-Simple Python scraper that queries search engines to discover job boards and collect result links. Supports output to **Excel (.xlsx)**, JSON, and text formats.
+Python crawler that discovers job boards from search results and writes output to exactly two spreadsheets: aggregators and company career boards.
 
 ## Quick Start
 
@@ -15,67 +15,52 @@ pip install -r requirements.txt
 2. Run the crawler:
 
 ```bash
-# Save filtered job board domains to Excel
-python3 run.py --engine brave --filter --domains --output job_boards.xlsx
+# One-command comprehensive crawl (recommended)
+./start_comprehensive.sh
 
-# Save full results to Excel
-python3 run.py --engine brave --filter --output results.xlsx
+# Discover 25 NEW job boards, then stop
+python3 run.py --engine brave --filter --discover 25 --output output/discovery
 
-# Traditional text output
-python3 run.py --engine brave --filter --domains --output job_boards.txt
+# Backward-compatible alias for --discover
+python3 run.py --engine brave --filter --limit 25 --output output/discovery
 ```
+
+On Windows, use `start_comprehensive.bat` (CMD) or `./start_comprehensive.ps1` (PowerShell).
 
 ## Features
 
 - **Multiple Search Engines**: DuckDuckGo (default) or Brave Search backend
-- **Excel Output**: Automatically formatted `.xlsx` files with column headers
+- **Excel Output**: Exactly two `.xlsx` files per run (`*_companies.xlsx` and `*_aggregators.xlsx`)
 - **Query Generation**: Broad set of job-board discovery queries (synonyms, regions, industries)
 - **URL Extraction & Deduplication**: Automatically dedupes and normalizes links
 - **Smart Filtering**: Heuristic-based job board identification
 - **Content Verification**: Optional homepage scanning for job-related phrases
-- **Flexible Output**: JSON, Excel, or text formats
+- **Targeted Discovery**: Stop automatically when a requested number of NEW job boards is found
 
 ## Usage Examples
 
 ```bash
-# Excel output with domain filtering
-python3 run.py --engine brave --filter --domains --output job_boards.xlsx
+# Discover up to 50 NEW job boards this run
+python3 run.py --engine brave --filter --discover 50 --output output/standard_discovery
 
-# Full results with content verification (slower but more accurate)
-python3 run.py --engine brave --filter --verify --output verified_boards.xlsx
+# Discover with content verification (slower)
+python3 run.py --engine brave --filter --verify --discover 25 --output output/verified_discovery
 
 # Multiple custom queries
-python3 run.py --engine brave --filter --domains \
-    --queries "job boards" "remote jobs" "startup careers" \
-    --output results.xlsx
+python3 run.py --engine brave --filter --discover 30 \
+    --queries "job boards" "remote job boards" "engineering job boards" \
+    --output output/custom_discovery
 
-# Raw results without filtering
-python3 run.py --engine brave --output all_results.xlsx
-
-# Text output for scripting
-python3 run.py --engine brave --filter --domains --output domains.txt
+# Resume from checkpoint and discover 20 more
+python3 run.py --engine brave --filter --resume --discover 20 --output output/resumed_discovery
 ```
 
-## Output Formats
+## Output Files
 
-### Excel with Domains
-When using `--domains --output file.xlsx`:
-```
-Domain                  | URL
-------------------------|----
-www.indeed.com          | https://www.indeed.com
-www.glassdoor.com       | https://www.glassdoor.com
-www.ziprecruiter.com    | https://www.ziprecruiter.com
-```
+Each run writes only these two spreadsheets:
 
-### Excel with Full Results
-When using `--output file.xlsx` (without `--domains`):
-```
-Title                      | URL                        | Query
----------------------------|---------------------------|--------
-Job Search - Indeed        | https://www.indeed.com/   | job boards
-Glassdoor Jobs             | https://www.glassdoor.com | job boards
-```
+- `*_companies.xlsx` — Company career board results
+- `*_aggregators.xlsx` — Job aggregator results
 
 ## CLI Options
 
@@ -85,8 +70,12 @@ Glassdoor Jobs             | https://www.glassdoor.com | job boards
 - `--rate` – Delay between requests in seconds (default: 1.0)
 - `--filter` – Keep only likely job board URLs
 - `--verify` – Scan homepages for job keywords (slower)
-- `--domains` – Output only domain names
-- `--output` – Output file path (`.json`, `.xlsx`, or `.txt`)
+- `--discover` – Stop when this many NEW job boards are discovered in this run
+- `--limit` – Alias for `--discover` (backward compatibility)
+- `--detect-careers` – Try common career-page paths for company domains
+- `--resume` – Continue from prior checkpoint
+- `--checkpoint` – Custom checkpoint path
+- `--output` – Base output prefix (creates `*_companies.xlsx` and `*_aggregators.xlsx`)
 
 ## Configuration Notes
 

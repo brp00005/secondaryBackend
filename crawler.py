@@ -274,6 +274,140 @@ class DuckDuckGoJobBoardCrawler:
             pass
         return False
 
+    def confirm_job_board(self, url: str, deep: bool = False) -> bool:
+        """Confirm whether a URL is a real job board.
+
+        If `deep` is False, this falls back to lightweight heuristics
+        (`is_likely_job_board`). If `deep` is True, fetch the page and look
+        for stronger signals: JSON-LD JobPosting, job-related headings,
+        'apply'/'job' keywords in visible text, or multiple links that look
+        like job listings.
+        """
+        if not url:
+            return False
+
+        # quick heuristic first
+        if not deep:
+            return self.is_likely_job_board(url)
+
+        try:
+            r = self.session.get(url, timeout=self.timeout)
+            r.raise_for_status()
+            text = r.text
+        except requests.RequestException:
+            return False
+
+        lower = text.lower()
+
+        # strong signal: structured JobPosting JSON-LD
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(text, "html.parser")
+            for script in soup.find_all("script", type="application/ld+json"):
+                try:
+                    import json
+                    payload = json.loads(script.string or "{}")
+                    # payload may be a list
+                    if isinstance(payload, list):
+                        items = payload
+                    else:
+                        items = [payload]
+                    for it in items:
+                        it_type = it.get("@type") if isinstance(it, dict) else None
+                        if it_type and "job" in it_type.lower():
+                            return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # check for job-related keywords in visible text
+        for kw in self.PAGE_KEYWORDS + ["job", "jobs", "apply", "position", "opening", "vacancy"]:
+            if kw in lower:
+                return True
+
+        # check for multiple links that look like job postings
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(text, "html.parser")
+            anchors = soup.find_all("a", href=True)
+            job_like = 0
+            for a in anchors:
+                href = a["href"].lower()
+                if any(p in href for p in ["/jobs", "/careers", "/positions", "/openings", "job/"]):
+                    job_like += 1
+                # also check anchor text
+                txt = (a.get_text(" ", strip=True) or "").lower()
+                if any(k in txt for k in ["apply", "job", "position", "opening"]):
+                    job_like += 1
+                if job_like >= 3:
+                    return True
+        except Exception:
+            pass
+
+        return False
+
+    def confirm_company_site(self, url: str, deep: bool = False) -> bool:
+        """Heuristic check whether a URL/domain is an actual company website.
+
+        This excludes known forum/blog/social domains (reddit, medium, github,
+        twitter, facebook, quora, discourse, etc.) and optionally performs a
+        deeper page fetch to look for company signals like 'about', 'contact',
+        copyright notices, or legal entity identifiers (Inc, LLC) when
+        `deep=True`.
+        """
+        if not url:
+            return False
+
+        # normalize domain
+        try:
+            from urllib.parse import urlparse
+            domain = urlparse(url).netloc.lower()
+            domain = domain.replace("www.", "")
+        except Exception:
+            domain = url.lower()
+
+        # blacklist of common forum/social/blog domains
+        FORUM_DOMAINS = [
+            "reddit.com",
+            "medium.com",
+            "github.com",
+            "twitter.com",
+            "facebook.com",
+            "quora.com",
+            "discourse.org",
+            "forums.",
+            "forum.",
+        ]
+        for bad in FORUM_DOMAINS:
+            if bad in domain:
+                return False
+
+        # lightweight check passes (domain isn't a known forum)
+        if not deep:
+            return True
+
+        # deep check: fetch homepage and look for company signals
+        try:
+            r = self.session.get(f"https://{domain}", timeout=self.timeout)
+            r.raise_for_status()
+            text = r.text.lower()
+        except requests.RequestException:
+            # Try http fallback
+            try:
+                r = self.session.get(f"http://{domain}", timeout=self.timeout)
+                r.raise_for_status()
+                text = r.text.lower()
+            except requests.RequestException:
+                return False
+
+        signals = ["about", "contact", "©", "copyright", "inc", "llc", "headquarters", "our team", "leadership", "careers"]
+        for s in signals:
+            if s in text:
+                return True
+
+        return False
+
     def filter_urls(self, urls: Iterable[str], verify_content: bool = False) -> List[str]:
         """Filter URLs that look like job boards."""
         filtered: List[str] = []
