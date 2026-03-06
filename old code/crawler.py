@@ -1,9 +1,6 @@
 import time
 import json
 import logging
-import random
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from typing import List, Dict, Iterable, Optional, Tuple
 from urllib.parse import urlparse
 from pathlib import Path
@@ -32,11 +29,6 @@ class DuckDuckGoJobBoardCrawler:
             "parse_fn": "_parse_duckduckgo",
         },
         "brave": {
-            "base": "https://search.brave.com/search",
-            "method": "GET",
-            "parse_fn": "_parse_brave",
-        },
-        "playwright": {
             "base": "https://search.brave.com/search",
             "method": "GET",
             "parse_fn": "_parse_brave",
@@ -104,12 +96,6 @@ class DuckDuckGoJobBoardCrawler:
         user_agent: Optional[str] = None,
         timeout: int = 15,
         engine: str = "duckduckgo",
-        max_retries: int = 3,
-        backoff_factor: float = 1.0,
-        jitter: float = 0.2,
-        respect_retry_after_header: bool = True,
-        proxies: Optional[List[str]] = None,
-        proxy_ban_seconds: int = 300,
     ):
         self.rate_limit = rate_limit
         self.session = requests.Session()
@@ -119,155 +105,8 @@ class DuckDuckGoJobBoardCrawler:
         })
         self.timeout = timeout
         self.engine = engine.lower()
-        # retry/backoff configuration
-        self.max_retries = max_retries
-        self.backoff_factor = backoff_factor
-        self.jitter = jitter
-        self.respect_retry_after_header = respect_retry_after_header
-        # proxy pool: list of proxy URLs (e.g. http://user:pass@host:port)
-        self.proxies = list(proxies) if proxies else []
-        self._proxy_index = 0
-        # blacklisted proxies with expiry timestamps
-        self._proxy_blacklist = {}
-        self.proxy_ban_seconds = proxy_ban_seconds
-
-        # configure urllib3 Retry via requests adapters for session-wide retries
-        retry = Retry(
-            total=self.max_retries,
-            backoff_factor=self.backoff_factor,
-            status_forcelist=(429, 500, 502, 503, 504),
-            allowed_methods=frozenset(["GET", "POST", "HEAD", "PUT", "DELETE", "OPTIONS"]),
-            raise_on_status=False,
-            respect_retry_after_header=self.respect_retry_after_header,
-        )
-        adapter = HTTPAdapter(max_retries=retry)
-        self.session.mount("https://", adapter)
-        self.session.mount("http://", adapter)
-
-        # per-host last request timestamp for simple per-host throttling
-        self._host_last_request = {}
-
-        # wrap session.request to apply per-host throttling before requests
-        self._orig_request = self.session.request
-        def _wrapped_request(method, url, **kwargs):
-            try:
-                self._throttle(url)
-            except Exception:
-                pass
-
-            # if proxies configured, pick a proxy for this attempt (rotating)
-            proxy_used = None
-
-            # explicit handling for 429 with retries + respect Retry-After
-            last_exc = None
-            for attempt in range(1, max(1, self.max_retries) + 1):
-                # choose proxy for this attempt if available
-                if self.proxies:
-                    proxy = self._get_next_proxy()
-                    if proxy:
-                        proxy_used = proxy
-                        # requests expects a mapping for proxies
-                        kwargs.setdefault('proxies', proxy)
-
-                try:
-                    resp = self._orig_request(method, url, **kwargs)
-                except Exception as e:
-                    last_exc = e
-                    # on network errors, backoff and retry
-                    # mark proxy as failed and ban it briefly
-                    if proxy_used:
-                        self._ban_proxy(proxy_used)
-                        proxy_used = None
-                    wait = (self.backoff_factor ** attempt) + random.uniform(0, self.jitter * self.backoff_factor)
-                    time.sleep(wait)
-                    continue
-
-                # if not a 429, accept response
-                status = getattr(resp, 'status_code', None)
-                if status != 429:
-                    try:
-                        host = urlparse(url).netloc.lower()
-                        self._host_last_request[host] = time.time()
-                    except Exception:
-                        pass
-                    return resp
-
-                # status == 429: compute wait from Retry-After if available
-                retry_after = None
-                try:
-                    retry_after = resp.headers.get('Retry-After') if resp.headers else None
-                except Exception:
-                    retry_after = None
-
-                if retry_after:
-                    try:
-                        wait = int(retry_after)
-                    except Exception:
-                        try:
-                            # sometimes Retry-After is a HTTP-date; fall back to exponential
-                            wait = (self.backoff_factor ** attempt)
-                        except Exception:
-                            wait = 1
-                else:
-                    wait = (self.backoff_factor ** attempt)
-
-                # add jitter
-                wait = wait * (1 + random.uniform(0, self.jitter))
-                logger.warning("received 429 for %s; backing off %.1fs (attempt %d/%d)", url, wait, attempt, self.max_retries)
-                # ban proxy if present
-                if proxy_used:
-                    self._ban_proxy(proxy_used)
-                    proxy_used = None
-                time.sleep(wait)
-                last_resp = resp
-                # continue retrying
-
-            # exhausted retries
-            if last_exc:
-                raise last_exc
-            # raise based on last 429 response
-            try:
-                last_resp.raise_for_status()
-            except Exception as e:
-                raise
-            return last_resp
-        self.session.request = _wrapped_request
         if self.engine not in self.ENGINES:
             raise ValueError(f"unsupported engine: {engine}")
-
-    # --- proxy pool helpers -----------------------------------------------
-    def _get_next_proxy(self) -> Optional[Dict[str, str]]:
-        """Return the next available proxy mapping for requests or None."""
-        if not self.proxies:
-            return None
-        # rotate until a non-blacklisted proxy is found or we've tried all
-        start = self._proxy_index
-        tried = 0
-        n = len(self.proxies)
-        while tried < n:
-            idx = self._proxy_index % n
-            candidate = self.proxies[idx]
-            self._proxy_index = (self._proxy_index + 1) % n
-            tried += 1
-            # check blacklist
-            ban_until = self._proxy_blacklist.get(candidate)
-            if ban_until and time.time() < ban_until:
-                continue
-            # build mapping
-            return {"http": candidate, "https": candidate}
-        return None
-
-    def _ban_proxy(self, proxy_mapping: Dict[str, str]) -> None:
-        """Ban a proxy for a short period after failures."""
-        try:
-            # proxy_mapping expected as {'http': url, 'https': url}
-            url = proxy_mapping.get('http') or proxy_mapping.get('https')
-            if not url:
-                return
-            self._proxy_blacklist[url] = time.time() + max(1, int(self.proxy_ban_seconds))
-            logger.warning("banned proxy %s for %ds", url, self.proxy_ban_seconds)
-        except Exception:
-            pass
 
     # --- checkpoint/resume ---------------------------------------------------
     @staticmethod
@@ -437,7 +276,7 @@ class DuckDuckGoJobBoardCrawler:
 
     def confirm_job_board(self, url: str, deep: bool = False) -> bool:
         """Confirm whether a URL is a real job board.
-        
+
         If `deep` is False, this falls back to lightweight heuristics
         (`is_likely_job_board`). If `deep` is True, fetch the page and look
         for stronger signals: JSON-LD JobPosting, job-related headings,
@@ -542,7 +381,7 @@ class DuckDuckGoJobBoardCrawler:
             onclick = btn.get("onclick") or ""
             if onclick and any(k in btn.get_text(" ", strip=True).lower() for k in keywords):
                 import re
-                m = re.search(r'(https?://[^"\s]+)', onclick)
+                m = re.search(r"(https?://[^"]+)", onclick)
                 if m:
                     url = m.group(1)
                     if url not in candidates:
@@ -841,21 +680,16 @@ class DuckDuckGoJobBoardCrawler:
             data = {"q": query, "s": str(offset)}
         elif self.engine == "brave":
             params = {"q": query, "source": "web"}
-        elif self.engine == "playwright":
-            params = {"q": query, "source": "web"}
         else:
             params = {"q": query}
 
         try:
-            if self.engine == "playwright":
-                text = self._fetch_with_playwright(cfg["base"], params)
+            if method == "POST":
+                resp = self.session.post(cfg["base"], data=data, params=params, timeout=self.timeout)
             else:
-                if method == "POST":
-                    resp = self.session.post(cfg["base"], data=data, params=params, timeout=self.timeout)
-                else:
-                    resp = self.session.get(cfg["base"], params=params, timeout=self.timeout)
-                resp.raise_for_status()
-                text = resp.text
+                resp = self.session.get(cfg["base"], params=params, timeout=self.timeout)
+            resp.raise_for_status()
+            text = resp.text
 
             # detect bot challenges
             if self.engine == "duckduckgo" and (
@@ -876,46 +710,6 @@ class DuckDuckGoJobBoardCrawler:
         fn_name = self.ENGINES[self.engine]["parse_fn"]
         parse_fn = getattr(self, fn_name)
         return parse_fn(html)
-
-    def _fetch_with_playwright(self, base_url: str, params: Dict[str, str]) -> Optional[str]:
-        """Fetch a page using Playwright (synchronous). Requires playwright installed.
-
-        Builds the URL with `params` and navigates via a headless browser, returns
-        page HTML. This is heavier but reduces simple bot-detection for some sites.
-        """
-        try:
-            from playwright.sync_api import sync_playwright
-        except Exception as e:
-            raise RuntimeError("Playwright not installed; install with 'pip install playwright' and run 'playwright install' to install browsers") from e
-
-        # build url
-        from urllib.parse import urlencode, urljoin
-        url = base_url
-        if params:
-            url = f"{base_url}?{urlencode(params)}"
-
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context()
-            page = context.new_page()
-            try:
-                page.goto(url, timeout=self.timeout * 1000)
-                # wait for network to be mostly idle
-                try:
-                    page.wait_for_load_state("networkidle", timeout=self.timeout * 1000)
-                except Exception:
-                    pass
-                content = page.content()
-            finally:
-                try:
-                    context.close()
-                except Exception:
-                    pass
-                try:
-                    browser.close()
-                except Exception:
-                    pass
-        return content
 
     def _parse_duckduckgo(self, html: str) -> List[Dict]:
         """Parse DuckDuckGo HTML results."""
@@ -957,8 +751,7 @@ class DuckDuckGoJobBoardCrawler:
             if not page_results:
                 break
             all_results.extend(page_results)
-            # global sleep with jitter to avoid thundering patterns
-            time.sleep(self.rate_limit * (1 + random.uniform(0, self.jitter)))
+            time.sleep(self.rate_limit)
         return all_results
 
     def save(self, items: List[Dict], path: str) -> None:

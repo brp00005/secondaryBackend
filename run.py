@@ -2,10 +2,21 @@
 """CLI wrapper for the DuckDuckGo job board crawler."""
 import argparse
 import json
+import time
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from crawler import DuckDuckGoJobBoardCrawler
+import requests
+from bs4 import BeautifulSoup
+import re
+import os
+from datetime import datetime
+try:
+    from supabase_mcp import has_config, insert_discoveries
+except Exception:
+    has_config = lambda: False
+    insert_discoveries = lambda rows: False
 
 
 def parse_args():
@@ -16,7 +27,7 @@ def parse_args():
     p.add_argument("--output", default="results.json", help="Base output path (auto-suffixed)")
     p.add_argument(
         "--engine",
-        choices=["duckduckgo", "brave"],
+        choices=["duckduckgo", "brave", "playwright"],
         default="brave",
         help="Which search engine backend to use",
     )
@@ -68,7 +79,42 @@ def parse_args():
         help="List of states to search (e.g. 'California Texas'). If omitted, uses all US states",
     )
     p.add_argument(
+        "--state",
+        help="Run for a single state (overrides --states)",
+    )
+    p.add_argument(
         "--chamber-output",
+        default="chambers.xlsx",
+        help="Output workbook for chamber/member scraping",
+    )
+    p.add_argument(
+        "--proxies",
+        help="Path to a newline-separated file of HTTP/HTTPS proxies (e.g. http://user:pass@host:port)",
+    )
+    p.add_argument(
+        "--proxy-ban-seconds",
+        type=int,
+        default=300,
+        help="Seconds to ban a proxy after failure",
+    )
+    p.add_argument(
+        "--max-retries",
+        type=int,
+        default=3,
+        help="Max retries for requests",
+    )
+    p.add_argument(
+        "--backoff-factor",
+        type=float,
+        default=1.0,
+        help="Backoff factor for retries",
+    )
+    p.add_argument(
+        "--jitter",
+        type=float,
+        default=0.2,
+        help="Jitter multiplier for backoff sleeps",
+    )
         default="chambers.xlsx",
         help="Output workbook for chamber/member scraping",
     )
@@ -102,6 +148,219 @@ def categorize_urls(crawler, urls: List[str]) -> Dict[str, List[Dict]]:
     return {"aggregators": aggregators, "companies": companies}
 
 
+# canonical list of US states (50) — we'll sort before use to ensure alphabetical order
+ALL_US_STATES = [
+    "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado",
+    "Connecticut", "Delaware", "Florida", "Georgia", "Hawaii", "Idaho",
+    "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky", "Louisiana",
+    "Maine", "Maryland", "Massachusetts", "Michigan", "Minnesota", "Mississippi",
+    "Missouri", "Montana", "Nebraska", "Nevada", "New Hampshire", "New Jersey",
+    "New Mexico", "New York", "North Carolina", "North Dakota", "Ohio", "Oklahoma",
+    "Oregon", "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota",
+    "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington",
+    "West Virginia", "Wisconsin", "Wyoming",
+]
+
+
+def get_all_states() -> List[str]:
+    """Return all 50 US states in alphabetical order."""
+    return sorted(ALL_US_STATES)
+
+
+def fetch_and_save_counties(wiki_url: str, output_path: str = "us_counties.xlsx") -> None:
+    """Fetch county list from Wikipedia and save to an Excel workbook.
+
+    This scans 'wikitable' elements and attempts to extract county/state columns,
+    falling back to the first two columns when headers aren't explicit.
+    """
+    try:
+        resp = requests.get(wiki_url, timeout=20, headers={"User-Agent": "jobboard-crawler/1.0"})
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"  Could not fetch county data: {e}")
+        return
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    tables = soup.find_all("table", class_=lambda c: c and "wikitable" in c)
+    rows = []  # list of (state, county)
+
+    for table in tables:
+        headers = [th.get_text(strip=True) for th in table.find_all("th")]
+        county_idx = None
+        state_idx = None
+        for i, h in enumerate(headers):
+            h_low = h.lower()
+            if "county" in h_low or "county or equivalent" in h_low or h_low.startswith("name"):
+                county_idx = i
+            if "state" in h_low or "state or equivalent" in h_low:
+                state_idx = i
+
+        if county_idx is None or state_idx is None:
+            county_idx = 0
+            state_idx = 1
+
+        for tr in table.find_all("tr")[1:]:
+            cols = tr.find_all(["td", "th"])
+            if len(cols) <= max(county_idx, state_idx):
+                continue
+            county = cols[county_idx].get_text(" ", strip=True)
+            state = cols[state_idx].get_text(" ", strip=True)
+            county = re.sub(r"\[.*?\]", "", county).strip()
+            state = re.sub(r"\[.*?\]", "", state).strip()
+            if state and county:
+                rows.append((state, county))
+
+    if not rows:
+        print("  No county rows extracted from Wikipedia page")
+        return
+
+    try:
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Counties"
+        ws.append(["State", "County"])
+        for s, c in rows:
+            ws.append([s, c])
+        wb.save(output_path)
+        print(f"  Saved {len(rows)} county rows to {output_path}")
+    except Exception as e:
+        print(f"  Error saving county workbook: {e}")
+
+
+def augment_counties_with_chambers(crawler, counties_path: str = "us_counties.xlsx", output_path: Optional[str] = None, max_search_pages: int = 1):
+    """Read the counties workbook and search each county for its chamber directory.
+
+    Adds a "Chamber Directory" column to the workbook and writes the discovered
+    directory URL (first match) for each county. If `output_path` is None the
+    input file is updated in-place.
+    """
+    out_path = output_path or counties_path
+    try:
+        from openpyxl import load_workbook
+        wb = load_workbook(counties_path)
+        ws = wb.active
+    except Exception as e:
+        print(f"  Could not open counties workbook: {e}")
+        return
+
+    # ensure header
+    header = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
+    if "Chamber Directory" not in header:
+        ws.cell(row=1, column=len(header) + 1, value="Chamber Directory")
+        header.append("Chamber Directory")
+
+    state_col = None
+    county_col = None
+    for idx, h in enumerate(header, start=1):
+        if h and h.lower().strip() == "state":
+            state_col = idx
+        if h and h.lower().strip() == "county":
+            county_col = idx
+
+    if state_col is None or county_col is None:
+        print("  Counties workbook missing expected 'State'/'County' columns")
+        return
+
+    total = max(0, ws.max_row - 1)
+    found = 0
+    # determine chamber column index
+    header = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
+    try:
+        chamber_col = header.index("Chamber Directory") + 1
+    except ValueError:
+        chamber_col = len(header) + 1
+
+    for i, row_idx in enumerate(range(2, ws.max_row + 1), start=1):
+        state = (ws.cell(row=row_idx, column=state_col).value or "").strip()
+        county = (ws.cell(row=row_idx, column=county_col).value or "").strip()
+        if not county or not state:
+            continue
+
+        # build query: e.g. 'Uinta wyoming chamber of commerce business directory'
+        query = f"{county} {state} chamber of commerce business directory"
+        # attempt search with retries and exponential backoff on 429s
+        results = []
+        max_retries = 5
+        backoff_base = 2
+        tried_alt = False
+        for attempt in range(1, max_retries + 1):
+            try:
+                results = crawler.search(query, pages=max_search_pages)
+                break
+            except Exception as e:
+                # detect HTTP 429 if possible
+                from requests import exceptions as req_ex
+                is_429 = False
+                if isinstance(e, req_ex.HTTPError) and getattr(e, 'response', None) is not None:
+                    try:
+                        if e.response.status_code == 429:
+                            is_429 = True
+                    except Exception:
+                        pass
+                # fall back to string check if type not available
+                if not is_429 and isinstance(e, Exception) and '429' in str(e):
+                    is_429 = True
+
+                if is_429:
+                    wait = backoff_base ** attempt
+                    print(f"    request failed: 429 Too Many Requests; backing off {wait}s (attempt {attempt}/{max_retries})")
+                    time.sleep(wait)
+                    # if repeated 429s and we haven't tried an alternate engine, try DuckDuckGo once
+                    if attempt >= 3 and not tried_alt:
+                        try:
+                            print("    trying alternate search engine (duckduckgo) due to repeated 429s")
+                            alt = DuckDuckGoJobBoardCrawler(
+                                rate_limit=max(crawler.rate_limit, 2.0),
+                                engine="duckduckgo",
+                                max_retries=crawler.max_retries,
+                                backoff_factor=crawler.backoff_factor,
+                                jitter=crawler.jitter,
+                                proxies=getattr(crawler, 'proxies', None),
+                                proxy_ban_seconds=getattr(crawler, 'proxy_ban_seconds', 300),
+                            )
+                            results = alt.search(query, pages=max_search_pages)
+                            tried_alt = True
+                            break
+                        except Exception as ae:
+                            print(f"    alternate engine attempt failed: {ae}")
+                            # continue retry/backoff loop
+                            continue
+                    continue
+                else:
+                    print(f"    Search error for {county}, {state}: {e}")
+                    break
+
+        chamber_url = ""
+        for r in results:
+            u = r.get("url")
+            if not u:
+                continue
+            d = crawler.get_domain(u)
+            if not d:
+                continue
+            if "chamber" in d or "chamber" in u.lower():
+                chamber_url = u
+                break
+
+        # write to the Chamber Directory column and save immediately when found
+        ws.cell(row=row_idx, column=chamber_col, value=chamber_url)
+        if chamber_url:
+            found += 1
+            try:
+                wb.save(out_path)
+            except Exception as e:
+                print(f"  Error saving augmented counties workbook (row {row_idx}): {e}")
+
+        # progress print
+        print(f"    [{i}/{total}] {county}, {state} -> {chamber_url or '---'}")
+
+        # be polite
+        time.sleep(crawler.rate_limit)
+
+    print(f"  Augmented counties workbook progress complete ({found}/{total} chambers found)")
+
+
 def main():
     args = parse_args()
     discover_target = args.discover if args.discover is not None else args.limit
@@ -120,7 +379,28 @@ def main():
         if start_index > 0:
             print(f"[Resume] Starting from query #{start_index} (discovered: {checkpoint.get('discovered_count', 0)})")
     
-    crawler = DuckDuckGoJobBoardCrawler(rate_limit=args.rate, engine=args.engine)
+    # load proxies file if provided
+    proxies_list = None
+    if args.proxies:
+        try:
+            ppath = Path(args.proxies)
+            if ppath.exists():
+                with open(ppath, "r", encoding="utf-8") as pf:
+                    lines = [l.strip() for l in pf.readlines()]
+                    # ignore blank lines and comments
+                    proxies_list = [l for l in lines if l and not l.startswith("#")]
+        except Exception as e:
+            print(f"Warning: could not read proxies file: {e}")
+
+    crawler = DuckDuckGoJobBoardCrawler(
+        rate_limit=args.rate,
+        engine=args.engine,
+        max_retries=args.max_retries,
+        backoff_factor=args.backoff_factor,
+        jitter=args.jitter,
+        proxies=proxies_list,
+        proxy_ban_seconds=args.proxy_ban_seconds,
+    )
     seen_keys = set(checkpoint.get("discovered_keys", [])) if args.resume else set()
     if args.resume and not seen_keys:
         previous_count = checkpoint.get("discovered_count", 0)
@@ -131,24 +411,36 @@ def main():
     # Chambers workflow
     if args.chambers:
         print("Running Chamber-of-Commerce directory discovery...")
-        states = args.states or [
-            "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado",
-            "Connecticut", "Delaware", "Florida", "Georgia", "Hawaii", "Idaho",
-            "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky", "Louisiana",
-            "Maine", "Maryland", "Massachusetts", "Michigan", "Minnesota", "Mississippi",
-            "Missouri", "Montana", "Nebraska", "Nevada", "New Hampshire", "New Jersey",
-            "New Mexico", "New York", "North Carolina", "North Dakota", "Ohio", "Oklahoma",
-            "Oregon", "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota",
-            "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington",
-            "West Virginia", "Wisconsin", "Wyoming",
-        ]
+        # determine which states to run: single-state flag overrides --states
+        if args.state:
+            states = [args.state]
+        else:
+            states = args.states or get_all_states()
+
+        # fetch and save US counties from Wikipedia before proceeding with chamber discovery
+        print("  Fetching US counties from Wikipedia and saving to 'us_counties.xlsx'...")
+        try:
+            fetch_and_save_counties(
+                "https://en.wikipedia.org/wiki/List_of_United_States_counties_and_county_equivalents",
+                output_path="us_counties.xlsx",
+            )
+        except Exception as e:
+            print(f"  County extraction failed: {e}")
+
+        # Augment the counties workbook with discovered chamber directory links
+        print("  Augmenting counties workbook with chamber directory links...")
+        try:
+            augment_counties_with_chambers(crawler, counties_path="us_counties.xlsx")
+        except Exception as e:
+            print(f"  County->chamber augmentation failed: {e}")
 
         chamber_progress = checkpoint.get("chamber_progress", {})
         members_rows = []
         verified_rows = []
 
-        for state in states:
-            print(f"State: {state}")
+        total_states = len(states)
+        for si, state in enumerate(states, start=1):
+            print(f"[{si}/{total_states}] State: {state}")
             query = f"{state} chamber of commerce member directory"
             try:
                 results = crawler.search(query, pages=1)
@@ -361,6 +653,21 @@ def main():
     crawler.save_aggregators_to_excel(aggregators, aggregator_file)
     print(f"Saved {len(aggregators)} job aggregators to {aggregator_file}")
     
+    # optionally push discoveries to Supabase if configured
+    try:
+        if has_config() and companies:
+            rows = []
+            for c in companies:
+                rows.append({
+                    "domain": c.get("domain"),
+                    "url": c.get("career_page") or c.get("url"),
+                    "source": c.get("source", "crawler"),
+                    "discovered_at": datetime.utcnow().isoformat(),
+                })
+            insert_discoveries(rows)
+    except Exception as e:
+        print(f"  Supabase push error: {e}")
+
     # update checkpoint
     checkpoint["last_query_index"] = len(queries) - 1
     checkpoint["discovered_count"] = len(seen_keys)
