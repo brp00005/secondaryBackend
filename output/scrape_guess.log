@@ -1,0 +1,13 @@
+nohup: ignoring input
+
+======================================================================
+  US CHAMBER OF COMMERCE SCRAPER - ALL STATES
+  Target: 50 states
+  Started: 2026-03-13 16:11:46
+======================================================================
+
+
+[1/50] Processing Alabama...
+→ Fetching alabama from https://www.uschamber.com/co/chambers/alabama...
+✓ Retrieved 658393 bytes for alabama
+Alabama chambers:   0%|          | 0/121 [00:00<?, ?chamber/s]Alabama chambers:  39%|███▉      | 47/121 [00:10<00:16,  4.49chamber/s]Alabama chambers:  42%|████▏     | 51/121 [00:16<00:24,  2.85chamber/s]Alabama chambers:  43%|████▎     | 52/121 [00:21<00:38,  1.80chamber/s]Alabama chambers:  44%|████▍     | 53/121 [00:27<00:55,  1.22chamber/s]Alabama chambers:  50%|████▉     | 60/121 [00:33<00:50,  1.22chamber/s]Alabama chambers:  50%|█████     | 61/121 [00:39<01:08,  1.14s/chamber]Alabama chambers:  53%|█████▎    | 64/121 [00:44<01:14,  1.31s/chamber]Alabama chambers:  55%|█████▍    | 66/121 [00:50<01:27,  1.59s/chamber]Alabama chambers:  59%|█████▊    | 71/121 [00:56<01:10,  1.40s/chamber]Alabama chambers:  60%|█████▉    | 72/121 [01:02<01:30,  1.85s/chamber]Alabama chambers:  61%|██████    | 74/121 [01:15<02:16,  2.91s/chamber]Alabama chambers:  62%|██████▏   | 75/121 [01:21<02:32,  3.32s/chamber]Alabama chambers:  63%|██████▎   | 76/121 [01:27<02:45,  3.67s/chamber]Alabama chambers:  64%|██████▎   | 77/121 [01:32<02:54,  3.96s/chamber]Alabama chambers:  72%|███████▏  | 87/121 [01:37<00:49,  1.47s/chamber]Alabama chambers:  74%|███████▎  | 89/121 [01:43<00:54,  1.72s/chamber]Alabama chambers:  81%|████████  | 98/121 [01:49<00:26,  1.14s/chamber]Alabama chambers:  86%|████████▌ | 104/121 [01:55<00:18,  1.09s/chamber]Alabama chambers:  90%|█████████ | 109/121 [02:00<00:13,  1.09s/chamber]

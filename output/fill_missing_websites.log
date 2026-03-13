@@ -1,0 +1,32 @@
+nohup: ignoring input
+Loading existing output from output/uschamber_all_states.csv...
+Found 1797 rows with empty website (out of 9283).
+Processing row 1/1797: Abbeville Chamber of Commerce (AL)
+  ✗ No guess found
+Processing row 2/1797: Ashford Area Chamber of Commerce (AL)
+  ✗ No guess found
+Processing row 3/1797: Bayou La Batre Chamber of Commerce (AL)
+  ✗ No guess found
+Processing row 4/1797: Bibb County Chamber of Commerce (AL)
+  ✗ No guess found
+Processing row 5/1797: Choctaw County Chamber of Commerce & Comm. Dev. Fo (AL)
+  ✗ No guess found
+Processing row 6/1797: Citronelle Economic Developement (AL)
+  ✗ No guess found
+Processing row 7/1797: Cleburne County Chamber of Commerce (AL)
+  ✗ No guess found
+Processing row 8/1797: Crenshaw County Chamber of Commerce (AL)
+  ✗ No guess found
+Processing row 9/1797: East Walker County Chamber of Commerce (AL)
+  ✗ No guess found
+Processing row 10/1797: Eutaw Area Chamber of Commerce (AL)
+  ✗ No guess found
+Processing row 11/1797: Fairfield Chamber of Commerce (AL)
+  ✗ No guess found
+Processing row 12/1797: Fayette Area Chamber of Commerce (AL)
+  ✓ Filled: https://fayettechamberofcommerce.com
+Processing row 13/1797: Flomaton Chamber of Commerce (AL)
+  ✗ No guess found
+Processing row 14/1797: Fort Deposit Chamber of Commerce (AL)
+  ✗ No guess found
+Processing row 15/1797: Greater Valley AreaChamber of Commerce (AL)

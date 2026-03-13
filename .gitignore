@@ -6,12 +6,6 @@ venv/
 __pycache__/
 *.pyc
 
-# Crawler output
-output/
-.crawler_checkpoint.json
-.test_checkpoint.json
-*.xlsx
-*.log
 
 # Sample/test data
 results.json
